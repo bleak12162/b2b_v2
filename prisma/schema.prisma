@@ -1,0 +1,202 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// =====================================
+// Companies and Users
+// =====================================
+
+model Company {
+  id        String   @id @default(cuid())
+  name      String
+  type      String   @default("unknown") // "orderer" or "farmer"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users               User[]
+  products            Product[]
+  shipTos             ShipTo[]
+  shipToFarmerRoutes  ShipToFarmerRoute[]
+  orders              Order[]
+
+  @@index([type])
+}
+
+model User {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  email     String   @unique
+  name      String
+  role      String   @default("user") // "admin", "user"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  settings UserSetting?
+
+  @@index([companyId])
+}
+
+model UserSetting {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  lineUserId String? // LINE messaging API user ID
+
+  @@index([lineUserId])
+}
+
+// =====================================
+// Products and Pricing
+// =====================================
+
+model Product {
+  id              String   @id @default(cuid())
+  farmerCompanyId String
+  farmerCompany   Company  @relation(fields: [farmerCompanyId], references: [id], onDelete: Cascade)
+  name            String
+  unitPrice       Float    @default(0) // Base unit price
+  unit            String   @default("個")
+  isManaged       Boolean  @default(true) // Track inventory?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  orderItems      OrderItem[]
+  specialPrices   ProductSpecialPrice[]
+
+  @@index([farmerCompanyId])
+}
+
+model ProductSpecialPrice {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  price     Float
+  validFrom DateTime
+  validTo   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@index([validFrom, validTo])
+}
+
+// =====================================
+// Orders
+// =====================================
+
+model Order {
+  id                String   @id @default(cuid())
+  ordererCompanyId  String   // Always the orderer
+  ordererCompany    Company  @relation(fields: [ordererCompanyId], references: [id], onDelete: Cascade)
+  farmerCompanyId   String   // Receiver farmer
+  
+  status            String   @default("new") // new, processing, shipped, completed, canceled
+  shipToId          String?  // Ship-to location
+  shipToLabel       String?  // Snapshot of ShipTo.label
+  shipToAddress     String?  // Snapshot of ShipTo.address
+  shipToPhone       String?  // Snapshot of ShipTo.phone
+
+  discountAmount    Float    @default(0)
+  totalAmount       Float    @default(0)
+
+  trackingNo        String?  // Shipping tracking number
+  shippedAt         DateTime?
+  
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  completedAt       DateTime?
+
+  items             OrderItem[]
+  inventoryLedger   InventoryLedger[]
+
+  @@index([ordererCompanyId])
+  @@index([farmerCompanyId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  
+  quantity  Int
+  unitPrice Float    // Snapshot at order creation time (immutable)
+  subtotal  Float    // quantity * unitPrice (calculated)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+// =====================================
+// Inventory Ledger
+// =====================================
+
+model InventoryLedger {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String
+  
+  type      String   // "allocate", "deallocate", "ship"
+  quantity  Int
+  
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([createdAt])
+}
+
+// =====================================
+// Shipping Addresses (Ship-To Master)
+// =====================================
+
+model ShipTo {
+  id              String   @id @default(cuid())
+  ordererCompanyId String  // Owner: orderer company only
+  ordererCompany  Company  @relation(fields: [ordererCompanyId], references: [id], onDelete: Cascade)
+  
+  label           String   // e.g., "Tokyo Warehouse", "Osaka Hub"
+  address         String   // Full address
+  phone           String?  // Contact phone
+  isActive        Boolean  @default(true)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  routes          ShipToFarmerRoute[]
+
+  @@index([ordererCompanyId])
+}
+
+model ShipToFarmerRoute {
+  id              String   @id @default(cuid())
+  shipToId        String
+  shipTo          ShipTo   @relation(fields: [shipToId], references: [id], onDelete: Cascade)
+  farmerCompanyId String
+  farmerCompany   Company  @relation(fields: [farmerCompanyId], references: [id], onDelete: Cascade)
+  
+  isAllowed       Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([shipToId, farmerCompanyId])
+  @@index([shipToId])
+  @@index([farmerCompanyId])
+}
