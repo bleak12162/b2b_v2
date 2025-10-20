@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git init)",
+      "Bash(git config user.name \"小松将馬\")",
+      "Bash(git config user.email \"user@example.com\")",
+      "Bash(git add -A)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nInitial commit: Add b2b_v2 project\n\n🤖 Generated with Claude Code\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
