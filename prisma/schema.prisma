@@ -1,202 +1,224 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
-}
+// Prisma schema for b2b v2 order management system
+// See 01_tech/database_design.md for the canonical design guidelines.
 
 generator client {
   provider = "prisma-client-js"
 }
 
-// =====================================
-// Companies and Users
-// =====================================
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CompanyType {
+  ORDERER
+  FARMER
+}
+
+enum UserRole {
+  ORDERER_ADMIN
+  ORDERER_STAFF
+  FARMER_ADMIN
+  FARMER_STAFF
+}
+
+enum OrderStatus {
+  NEW
+  PROCESSING
+  SHIPPED
+  COMPLETED
+  CANCELED
+}
+
+enum InventoryMovementType {
+  ADJUSTMENT
+  ALLOCATE
+  DEALLOCATE
+  SHIP
+}
 
 model Company {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   name      String
-  type      String   @default("unknown") // "orderer" or "farmer"
+  type      CompanyType
+  code      String?  @unique
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users               User[]
-  products            Product[]
-  shipTos             ShipTo[]
-  shipToFarmerRoutes  ShipToFarmerRoute[]
-  orders              Order[]
+  users             User[]
+  products          Product[]          @relation("CompanyProducts")
+  ordersAsOrderer   Order[]            @relation("OrderOrderer")
+  ordersAsFarmer    Order[]            @relation("OrderFarmer")
+  shipTos           ShipTo[]
+  farmerRoutes      ShipToFarmerRoute[]
+  inventoryLedgers  InventoryLedger[]  @relation("CompanyLedger")
 
   @@index([type])
 }
 
 model User {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   companyId String
-  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
   email     String   @unique
   name      String
-  role      String   @default("user") // "admin", "user"
+  role      UserRole
+  isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  company  Company     @relation(fields: [companyId], references: [id])
+  orders   Order[]     @relation("OrderCreator")
   settings UserSetting?
-
-  @@index([companyId])
 }
-
-model UserSetting {
-  id     String @id @default(cuid())
-  userId String @unique
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  lineUserId String? // LINE messaging API user ID
-
-  @@index([lineUserId])
-}
-
-// =====================================
-// Products and Pricing
-// =====================================
 
 model Product {
-  id              String   @id @default(cuid())
-  farmerCompanyId String
-  farmerCompany   Company  @relation(fields: [farmerCompanyId], references: [id], onDelete: Cascade)
-  name            String
-  unitPrice       Float    @default(0) // Base unit price
-  unit            String   @default("個")
-  isManaged       Boolean  @default(true) // Track inventory?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id          String   @id @default(uuid())
+  farmerId    String
+  name        String
+  sku         String?  @unique
+  description String?
+  unit        String
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  orderItems      OrderItem[]
-  specialPrices   ProductSpecialPrice[]
+  farmer        Company               @relation("CompanyProducts", fields: [farmerId], references: [id])
+  specialPrices ProductSpecialPrice[]
+  orderItems    OrderItem[]
+  ledgers       InventoryLedger[]
 
-  @@index([farmerCompanyId])
+  @@index([farmerId, isActive])
 }
 
 model ProductSpecialPrice {
-  id        String   @id @default(cuid())
+  id        String   @id @default(uuid())
   productId String
-  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  price     Float
-  validFrom DateTime
-  validTo   DateTime
+  startAt   DateTime
+  endAt     DateTime?
+  price     Decimal  @db.Decimal(12, 2)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  @@index([productId])
-  @@index([validFrom, validTo])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([productId, startAt, endAt])
 }
 
-// =====================================
-// Orders
-// =====================================
-
 model Order {
-  id                String   @id @default(cuid())
-  ordererCompanyId  String   // Always the orderer
-  ordererCompany    Company  @relation(fields: [ordererCompanyId], references: [id], onDelete: Cascade)
-  farmerCompanyId   String   // Receiver farmer
-  
-  status            String   @default("new") // new, processing, shipped, completed, canceled
-  shipToId          String?  // Ship-to location
-  shipToLabel       String?  // Snapshot of ShipTo.label
-  shipToAddress     String?  // Snapshot of ShipTo.address
-  shipToPhone       String?  // Snapshot of ShipTo.phone
-
-  discountAmount    Float    @default(0)
-  totalAmount       Float    @default(0)
-
-  trackingNo        String?  // Shipping tracking number
+  id                String       @id @default(uuid())
+  orderCode         String       @unique
+  status            OrderStatus  @default(NEW)
+  ordererCompanyId  String
+  farmerCompanyId   String
+  orderedById       String
+  discountAmount    Decimal      @default(0) @db.Decimal(12, 2)
+  totalAmount       Decimal      @default(0) @db.Decimal(12, 2)
+  orderedAt         DateTime     @default(now())
+  requestedDelivery DateTime?
+  notes             String?
+  confirmedAt       DateTime?
   shippedAt         DateTime?
-  
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
   completedAt       DateTime?
+  canceledAt        DateTime?
+  trackingNumber    String?
+  shipToId          String?
+  shipToLabelSnap   String?
+  shipToAddressSnap String?
+  shipToPhoneSnap   String?
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
 
-  items             OrderItem[]
-  inventoryLedger   InventoryLedger[]
-
-  @@index([ordererCompanyId])
-  @@index([farmerCompanyId])
-  @@index([status])
-  @@index([createdAt])
+  orderer Company @relation("OrderOrderer", fields: [ordererCompanyId], references: [id])
+  farmer  Company @relation("OrderFarmer", fields: [farmerCompanyId], references: [id])
+  orderedBy User  @relation("OrderCreator", fields: [orderedById], references: [id])
+  shipTo    ShipTo? @relation(fields: [shipToId], references: [id])
+  items     OrderItem[]
+  ledgers   InventoryLedger[]
 }
 
 model OrderItem {
-  id        String   @id @default(cuid())
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId String
-  product   Product  @relation(fields: [productId], references: [id])
-  
-  quantity  Int
-  unitPrice Float    // Snapshot at order creation time (immutable)
-  subtotal  Float    // quantity * unitPrice (calculated)
-  
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(uuid())
+  orderId          String
+  productId        String
+  productNameSnap  String
+  productSkuSnap   String?
+  unit             String
+  quantity         Decimal  @db.Decimal(10, 2)
+  unitPrice        Decimal  @db.Decimal(12, 2)
+  totalPrice       Decimal  @db.Decimal(12, 2)
+  notes            String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  order   Order   @relation(fields: [orderId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+  ledgers InventoryLedger[]
 
   @@index([orderId])
-  @@index([productId])
 }
-
-// =====================================
-// Inventory Ledger
-// =====================================
 
 model InventoryLedger {
-  id        String   @id @default(cuid())
-  orderId   String
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId String
-  
-  type      String   // "allocate", "deallocate", "ship"
-  quantity  Int
-  
-  createdAt DateTime @default(now())
+  id              String                @id @default(uuid())
+  productId       String
+  farmerCompanyId String
+  orderId         String?
+  orderItemId     String?
+  movementType    InventoryMovementType
+  quantity        Decimal               @db.Decimal(10, 2)
+  occurredAt      DateTime              @default(now())
+  note            String?
+  createdAt       DateTime              @default(now())
 
+  product Product @relation(fields: [productId], references: [id])
+  order   Order?  @relation(fields: [orderId], references: [id])
+  orderItem OrderItem? @relation(fields: [orderItemId], references: [id])
+  farmer  Company @relation("CompanyLedger", fields: [farmerCompanyId], references: [id])
+
+  @@index([productId, occurredAt])
   @@index([orderId])
-  @@index([productId])
-  @@index([createdAt])
 }
 
-// =====================================
-// Shipping Addresses (Ship-To Master)
-// =====================================
-
 model ShipTo {
-  id              String   @id @default(cuid())
-  ordererCompanyId String  // Owner: orderer company only
-  ordererCompany  Company  @relation(fields: [ordererCompanyId], references: [id], onDelete: Cascade)
-  
-  label           String   // e.g., "Tokyo Warehouse", "Osaka Hub"
-  address         String   // Full address
-  phone           String?  // Contact phone
-  isActive        Boolean  @default(true)
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id          String   @id @default(uuid())
+  companyId   String
+  label       String
+  postalCode  String?
+  address     String
+  phoneNumber String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  routes          ShipToFarmerRoute[]
+  company Company  @relation(fields: [companyId], references: [id])
+  orders  Order[]
+  routes  ShipToFarmerRoute[]
 
-  @@index([ordererCompanyId])
+  @@unique([companyId, label])
 }
 
 model ShipToFarmerRoute {
-  id              String   @id @default(cuid())
+  id              String   @id @default(uuid())
   shipToId        String
-  shipTo          ShipTo   @relation(fields: [shipToId], references: [id], onDelete: Cascade)
   farmerCompanyId String
-  farmerCompany   Company  @relation(fields: [farmerCompanyId], references: [id], onDelete: Cascade)
-  
-  isAllowed       Boolean  @default(true)
+  isEnabled       Boolean  @default(true)
   createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+
+  shipTo ShipTo  @relation(fields: [shipToId], references: [id])
+  farmer Company @relation(fields: [farmerCompanyId], references: [id])
 
   @@unique([shipToId, farmerCompanyId])
-  @@index([shipToId])
-  @@index([farmerCompanyId])
+}
+
+model UserSetting {
+  id                String   @id @default(uuid())
+  userId            String   @unique
+  lineUserId        String?
+  lineEnabled       Boolean  @default(false)
+  notificationFlags Json?    // reserved for future toggles
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
 }

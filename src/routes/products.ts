@@ -1,49 +1,63 @@
-import { FastifyInstance } from 'fastify';
+import { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import prisma from '../db/client.js';
-import { pricingService } from '../services/PricingService.js';
-import { NotFoundError } from '../utils/errors.js';
+import { prisma } from '../db.js';
+import { notFound } from '../errors.js';
+import { listFarmerProductsWithEffectivePrice } from '../services/price.js';
 
-export async function productRoutes(app: FastifyInstance) {
-  // GET /farmers/:id/products - Get catalog with effective pricing
-  app.get('/farmers/:id/products', async (request, reply) => {
-    const { id: farmerId } = request.params as { id: string };
+const productResponseSchema = z.object({
+  id: z.string(),
+  farmerId: z.string(),
+  name: z.string(),
+  sku: z.string().nullable(),
+  description: z.string().nullable(),
+  unit: z.string(),
+  unitPrice: z.string(),
+  effectivePrice: z.string(),
+  specialPriceId: z.string().nullable()
+});
 
-    const company = await prisma.company.findUnique({
-      where: { id: farmerId },
-    });
+type ProductResponse = z.infer<typeof productResponseSchema>;
 
-    if (!company) {
-      throw new NotFoundError('Company', farmerId);
-    }
-
-    const products = await prisma.product.findMany({
-      where: {
-        farmerCompanyId: farmerId,
-      },
-      include: {
-        specialPrices: {
-          where: {
-            validFrom: { lte: new Date() },
-            validTo: { gte: new Date() },
-          },
-          take: 1,
-        },
-      },
-    });
-
-    return {
-      farmerId,
-      farmerName: company.name,
-      products: products.map(p => ({
-        id: p.id,
-        name: p.name,
-        unitPrice: p.unitPrice,
-        effectivePrice: p.specialPrices[0]?.price || p.unitPrice,
-        isSpecial: p.specialPrices.length > 0,
-        unit: p.unit,
-        isManaged: p.isManaged,
-      })),
-    };
-  });
+function serializeProduct(product: ProductResponse): ProductResponse {
+  return product;
 }
+
+const productsRoutes: FastifyPluginAsync = async (app) => {
+  app.get(
+    '/farmers/:farmerId/products',
+    {
+      schema: {
+        params: z.object({ farmerId: z.string() }),
+        response: {
+          200: z.object({
+            products: z.array(productResponseSchema)
+          })
+        }
+      }
+    },
+    async (request) => {
+      const { farmerId } = request.params as { farmerId: string };
+      const farmer = await prisma.company.findUnique({ where: { id: farmerId } });
+      if (!farmer || farmer.type !== 'FARMER') {
+        throw notFound('FARMER_NOT_FOUND', 'Farmer company not found.');
+      }
+
+      const products = await listFarmerProductsWithEffectivePrice(prisma, farmerId);
+      const payload: ProductResponse[] = products.map((product) => ({
+        id: product.id,
+        farmerId: product.farmerId,
+        name: product.name,
+        sku: product.sku,
+        description: product.description,
+        unit: product.unit,
+        unitPrice: product.unitPrice.toString(),
+        effectivePrice: product.effectivePrice.toString(),
+        specialPriceId: product.specialPriceId
+      }));
+
+      return { products: payload.map(serializeProduct) };
+    }
+  );
+};
+
+export default productsRoutes;
