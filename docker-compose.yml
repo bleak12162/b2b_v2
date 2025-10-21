@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: b2b_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-b2b_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-b2b_password}
+      POSTGRES_DB: ${DB_NAME:-b2b_v2}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-b2b_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - b2b_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./b2b_v2
+      dockerfile: Dockerfile
+    container_name: b2b_backend
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${DB_USER:-b2b_user}:${DB_PASSWORD:-b2b_password}@postgres:5432/${DB_NAME:-b2b_v2}
+      ORDERER_COMPANY_ID: ${ORDERER_COMPANY_ID:-00000000-0000-0000-0000-000000000001}
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - b2b_network
+    command: sh -c "pnpm prisma migrate deploy && node dist/index.js"
+
+  # Frontend (Nginx)
+  frontend:
+    build:
+      context: ./b2b_v2_frontend
+      dockerfile: Dockerfile
+    container_name: b2b_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - b2b_network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  b2b_network:
+    driver: bridge
